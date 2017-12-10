@@ -1,0 +1,84 @@
+from cozmo_fsm import *
+import math
+
+'''
+Speech commands for tic-tac-toe
+
+'''
+
+
+# This node will have Cozmo get a chip from a line of chips
+class GetChip(StateNode):
+    def start(self, event=None):
+        if self.running: return
+        super().start(event)
+
+
+# This node will use the RRT Path Planner with a given goal node
+# and a global map of obstacles to place the chip at the desired location
+class PlaceChip(StateNode):
+    def start(self, event=None):
+        if self.running: return
+        super().start(event)
+
+        # Start node will be Cozmo's location
+        # Goal node will be data passed in representing
+        # the ending location of the chip on the board
+        start = RRTNode(x=0,y=0)
+        goal = RRTNode(x=400,y=0)
+
+        self.rrt = RRT(robot, step_size = 10, obstacles=[])
+
+        # Can be helpful for debugging to visualize the path
+        # on the board along with the obstacles
+        self.pv = PathViewer(self.rrt)
+        self.pv.start_thread()
+
+        (treeA, treeB, path) = self.rrt.plan_path(start,goal)
+
+        i = 0
+        j = 1
+        planned_path = []
+        while j < len(path):
+            node_a = path[i]
+            node_b = path[j]
+
+            a_x = node_a.x
+            a_y = node_a.y
+            a_q = node_a.q
+            b_x = node_b.x
+            b_y = node_b.y
+            b_q = node_b.q
+
+            heading = Angle(degrees=math.degrees(b_q-a_q))
+
+            dist_to_b = Distance(distance_mm=math.sqrt((b_x-a_x)**2 + \
+                                (b_y-a_y)**2))
+
+            planned_path.append(dist_to_b)
+
+            i += 1
+            j += 1
+
+        self.post_data(planned_path)
+
+
+
+class HearLocation(Hear):
+    def __init__(self, **kwargs):
+        # TODO: hear location and post it
+
+
+
+class SpeechCommands(StateMachineProgram):
+    def __init__(self):
+        # TODO: add homophones to thesaurus
+
+        th = Thesaurus()
+        super().__init__(speech=True,thesaurus=th)
+    $setup {
+        loop: StateNode()
+        loop =Hear('cozmo ?.* move ?.* a _')=> get
+        get: GetChip() =C=> place
+        place: PlaceChip() =C=> loop
+    }

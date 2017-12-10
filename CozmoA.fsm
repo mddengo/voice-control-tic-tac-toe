@@ -1,0 +1,360 @@
+from cozmo_fsm import *
+from cozmo.objects import *
+import math
+from cozmo.util import Angle, Distance, Pose
+
+
+
+'''
+
+This is the file for Cozmo Alpha playing tic-tac-toe.
+Cozmo will first look around for custom markers in his surrounding.
+Cozmo will then use these markers to map the tic-tac-toe board, knowing
+where each square is. At this point Cozmo waits for voice commands and then
+performs the desired action when he hears one such as 
+
+"Cozmo Alpha move chip to Anteater now"
+
+We used animal names for each square to simplify the parsing of 
+the regular expressions.
+
+After every move, Cozmo returns home and awaits more commands.
+Cozmo also keeps track of game logic on the board.
+
+Worked on final project with partner: Vincent Liu (vincentl)
+
+'''
+
+
+# Global variable to keep track of number of chips we've used
+counter = 0
+
+# Global board variable
+board = {}
+
+# IDS of the corner markers
+corner_id_circ = 7
+corner_id_hex = 8
+
+# Respective widths of the squares
+x_width = 125
+y_width = 113
+tape_width = 15
+
+# Destination for Cozmo
+destination = 'a3'
+
+#Lists to keep track of chips
+chips_placed = []
+all_current_obs = []
+
+square_names = {'anteater': 'a1', 'bear': 'a2', 'cat': 'a3', 'dog': 'b1', 'elephant':'b2', 'frog': 'b3', 'goat': 'c1', 'horse':'c2', 'iguana':'c3'}
+squares = ['a1', 'a2', 'a3', 'b1', 'b2', 'b3', 'c1', 'c2', 'c3']
+
+#Set obstacle ids for non confliction in world map
+wid_c1 = 1003
+wid_c2 = 1004
+wid_c3 = 1005
+wid_c4 = 1006
+wid_c5 = 1007
+
+wid_sq = 1020
+
+#Win conditions for tic-tac-toe
+win_conditions = {
+    1: ['c1', 'c2', 'c3'],
+    2: ['b1', 'b2', 'b3'],
+    3: ['a1', 'a2', 'a3'],
+    4: ['a1', 'b1', 'c1'],
+    5: ['a2', 'b2', 'c2'],
+    6: ['a3', 'b3', 'c3'],
+    7: ['c1', 'b2', 'a3'],
+    8: ['a1', 'b2', 'c3']
+}
+
+# This node will have Cozmo separate a chip from a line of chips
+# to place at a desired location
+class GetChip(StateNode):
+    def start(self, event=None):
+        global counter
+
+        if self.running: return
+        super().start(event)
+
+        distFromChip = Distance(distance_mm=60) 
+        distBtwnChip = 60.0
+        turnAngle = Angle(degrees=-90)
+        turnBackAngle = Angle(degrees=90)
+        
+        #Based off what our counter (chip Cozmo is on) is currently at
+        #Determine next chip position and removed any moved ones already
+        #off the line
+        if counter == 0:       
+            path = [distFromChip]
+            counter += 1
+            del.robot.world.world_map.objects[wid_c1]
+            self.post_data(path)
+        elif counter == 1:
+            path = [turnAngle, Distance(distance_mm=distBtwnChip),
+                    turnBackAngle, distFromChip]
+            print(path)
+            counter += 1
+            del self.robot.world.world_map.objects[wid_c2]
+            self.post_data(path)
+        elif counter == 2:
+            path = [turnAngle, Distance(distance_mm=distBtwnChip*2),
+                    turnBackAngle, distFromChip]
+            counter += 1
+            del self.robot.world.world_map.objects[wid_c3]
+            self.post_data(path)
+        elif counter == 3:
+            path = [turnAngle, Distance(distance_mm=distBtwnChip*3),
+                    turnBackAngle, distFromChip]
+            counter += 1
+            del self.robot.world.world_map.objects[wid_c4]
+            self.post_data(path)
+        elif counter == 4:
+            path = [turnAngle, Distance(distance_mm=distBtwnChip*4),
+                    turnBackAngle, distFromChip]
+            counter += 1
+
+            self.post_data(path)
+        elif counter == 5:
+            path = [turnAngle, Distance(distance_mm=distBtwnChip*5),
+                    turnBackAngle, distFromChip]
+
+            self.post_data(path)
+        
+
+class GetBoard(StateNode):
+    def start(self, event=None):
+        if self.running: return
+        super().start(event)
+
+        global board
+        global corner_id1
+        global corner_id2
+
+        #Grab the custom objects around the board 
+        #Assume that two objects placed in opposite corners
+        corner1 = self.robot.world._objects[corner_id_circ]
+        corner2 = self.robot.world._objects[corner_id_hex]
+
+       
+        mid_x = corner1.pose.position.x + \
+                ((corner2.pose.position.x - corner1.pose.position.x) / 2.0)
+        mid_y = corner1.pose.position.y - \
+                ((abs(corner1.pose.position.y) + abs(corner2.pose.position.y)) / 2.0)
+
+        
+        board['a1'] = (mid_x - x_width, mid_y - y_width)
+        board['a2'] = (mid_x, mid_y - y_width)
+        board['a3'] = (mid_x + x_width, mid_y - y_width)
+        board['b1'] = (mid_x - x_width, mid_y)
+        board['b2'] = (mid_x, mid_y)
+        board['b3'] = (mid_x + x_width, mid_y)
+        board['c1'] = (mid_x - x_width, mid_y + y_width)
+        board['c2'] = (mid_x, mid_y + y_width)
+        board['c3'] = (mid_x + x_width, mid_y + y_width)
+
+        self.post_completion()
+
+class PushToSquare(PilotPushToPose):
+    
+    def __init__(self):
+        #Default init pose that gets overwritten in start
+        super().__init__(Pose(0,0,0,angle_z=degrees(90)))
+
+    def start(self, event = None):
+        global chips_placed
+
+        #Add the destination of chip placed
+        #This keeps track of Cozmo's chips placed so far
+        #For win logic
+        chips_placed.append(destination)
+
+        print("Going to: ", destination)
+        #Pose to go to with the chips
+        self.target_pose = Pose(board[destination][0], board[destination][1], 0, \
+                                angle_z=degrees(0))
+
+        super().start(event)
+
+# The code for AddInitialObstacles creates for one side
+#
+#
+class AddInitialObstacles(StateNode):
+    def __init__(self, square):
+        self.square = square
+        
+    def start(self, event=None):
+        super().start(event)
+
+
+        c1 = ChipObj(id = wid_c1, x = 20, y=-80, z = 25/2)
+        c2 = ChipObj(id = wid_c2, x = 40, y=-80, z = 25/2)
+        c3 = ChipObj(id = wid_c3, x = 60, y=-80, z = 25/2)
+        c4 = ChipObj(id = wid_c4, x = 80, y=-80, z = 25/2)
+        c5 = ChipObj(id = wid_c5, x = 100, y=-80, z = 25/2)
+
+        self.robot.world.world_map.objects[wid_c1] = c1
+        self.robot.world.world_map.objects[wid_c2] = c2
+        self.robot.world.world_map.objects[wid_c3] = c3
+        self.robot.world.world_map.objects[wid_c4] = c4
+        self.robot.world.world_map.objects[wid_c5] = c5
+
+        self.post_completion()
+
+class RetrieveLocation(StateNode):
+    def start(self, event=None):
+        if self.running: return
+        super().start(event)
+        global destination
+
+        print('words=', event.words)
+        print('result=', event.result)
+
+        tr = False
+        for sq in square_names:
+            if sq in event.words:
+                destination = square_names[sq]
+                tr = True
+                print('true')
+                self.post_completion()
+
+        if not tr:
+            print('false')
+            self.post_failure()
+
+
+class WaitUntilSeenCirc(StateNode):
+
+    def start(self, event=None):
+        super().start(event)
+
+        while corner_id_circ not in self.robot.world.world_map.objects:
+            continue 
+
+        self.post_completion()
+
+
+class WaitUntilSeenHex(StateNode):
+
+    def start(self, event=None):
+        super().start(event)
+
+        while corner_id_hex not in self.robot.world.world_map.objects:
+            continue 
+
+        self.post_completion()
+
+
+class DetermineLogicWin(StateNode):
+
+    def start(self, event=None):
+        super().start(event)
+
+        tr = False
+
+        #Checking for if Cozmo has won the game
+        #Checks if any of the win conditions are a subset
+        #of the chips Cozmo has placed so far
+        for key in win_conditions:
+            if set(win_conditions[key]) <= set(chips_placed):
+                tr = True
+                self.post_completion()
+
+        print(tr)
+        if not tr:
+            self.post_failure()
+
+'''
+
+Will add a chip object to Cozmo's World Map based on the
+destination that he will place the chip at
+
+'''
+class AddChipToSquare(StateNode):
+
+    def start(self, event = None):
+        super().start(event)
+        global wid_sq
+        global all_current_obs
+
+        all_current_obs.append(destination)
+        x_loc = board[destination][0]
+        y_loc = board[destination][1]
+        chip = ChipObj(id = wid_sq, x = x_loc, y= y_loc, z = 0)
+        self.robot.world.world_map.objects[wid_sq] = chip
+
+        with open('obst.txt', 'a') as f:
+            f.write(destination + '\n')
+
+        f.close() 
+
+
+        wid_sq += 1
+        self.post_completion()
+
+
+class UpdateAllObst(StateNode):
+    def start(self, event=None):
+
+        global wid_sq
+        with open('obst.txt') as f:
+            lines = f.readlines()
+
+        lines = [x.strip() for x in lines]
+        for obst in lines:
+            if obst not in all_current_obs:
+                chip = ChipObj(id = wid_sq, x = board[obst][0], y = board[obst][1] , z = 0)
+                self.robot.world.world_map.objects[wid_sq] = chip
+                wid_sq += 1
+                all_current_obs.append(obst)
+        f.close()
+        self.post_completion()
+
+
+class SpeechCommands(StateMachineProgram):
+    
+    def __init__(self, world_map=True):
+
+        th = Thesaurus()
+        super().__init__(speech=True,thesaurus=th, speech_debug=True)
+
+    $setup {
+
+        ##Start Node runs once and just grabs the board info on init
+
+        start: Turn(45) =T(2)=> Turn(-60) =T(2)=> Turn(15) =C=> get_board
+        get_board: GetBoard() =C=> listen
+
+        #This will be polling node where Cozmo is in his default position on
+        #the board and is waiting for voice commands from the user
+        listen: StateNode()
+        listen =Hear('cozmo ?.* alpha ?.* now') =>  retrieve
+        retrieve: RetrieveLocation()
+        retrieve =C=> get_chip
+        retrieve =F=> listen
+
+        #This following body of code handles turning towards and receiving a chip
+        get_chip: GetChip()
+        path_node: Iterate()
+        get_chip =D=> path_node
+        path_node =D(Distance)=> Forward() =CNext=> path_node
+        path_node =D(Angle)=> Turn() =CNext => path_node
+
+        #After a chip is retrieved into Cozmo's front grabber,
+        #make a drivearc turn to make not sure to bump into the other chips
+        path_node =C=> to_square
+
+        #The input into PushtoSquare should be the square tile indicated in the speech commands
+        #We want to reverse by 25 before trying to return home to make sure not to bump the chip
+        #We also want to add obstacles into the map when a chip is placed
+        to_square: PushToSquare() =C=> Forward(-25) =C=> back_home 
+        back_home: PilotToPose(Pose(0,0,0,angle_z=degrees(0))) =C=> AddChipToSquare() =C=> determine_win
+        determine_win: DetermineLogicWin() 
+        determine_win =C=> Say('We did it, we won!')
+        determine_win =F=> Say('Ready for next move!') =C=> listen
+
+    }   
